@@ -6,11 +6,11 @@ There's no proper installation script yet (we're working on that). You simply do
 
 ## Running the script
 
-To generate the masked files corresponding to a 5 sigma thresholding of residuals, for a given star (lets say PROXIMA), you run the following command:
+To generate the masked files corresponding to a 6-σ thresholding of residuals, for a given star (let's say PROXIMA), you run the following command:
 
 ``` python lbl_resmask.py PROXIMA 6.0 ```
 
-To generate the masked files for two stars and 3 different sigma cuts:
+To generate the masked files for two stars and 3 different σ cuts:
 
 ``` python lbl_resmask.py 'PROXIMA,GL699' '6.0,9.0,15.0' ```
 
