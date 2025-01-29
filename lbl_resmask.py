@@ -465,6 +465,10 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
         effective_rms = lowpassfilter((p84 - p16) / 2, wpwidth)
         p16 /= effective_rms
         p84 /= effective_rms
+        if (iord % 10) == 0 and doplot:
+            plt.plot(p16)
+            plt.plot(p84)
+            plt.show()
 
         nsig = np.sqrt( ((1+p16)/sig(p16))**2+((p84-1)/sig(p84))**2)
 
@@ -479,10 +483,10 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
             mask = np.array(mask_ini)
             singles = (np.convolve(mask,np.ones(3),mode = 'same') == 1) & mask
             mask[singles] = False
+            mask = binary_dilation(mask, structure=np.ones(5), output=mask)
 
             if (iord % 10) == 0 and doplot:
                 plt.plot(mask_ini.astype(int), label='initial mask', alpha =0.3)
-                mask = binary_dilation(mask, structure=np.ones(5), output=mask)
                 plt.plot(mask.astype(int), label='dilated mask', alpha =0.9)
                 plt.legend()
                 plt.show()
