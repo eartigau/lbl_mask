@@ -351,9 +351,18 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
         print(f'No FITS files found in directory: {obj}')
         return
 
-    # Number of orders in the data
-    n_orders = smart_get(files[0], 'FluxA')[0].shape[0]
+    hdr0 = smart_get(files[0], 'FluxA')[1]
+    if 'NIRPS' in hdr0['INSTRUME']:
+        fiber_setup = 'A'
+        instrument = 'NIRPS_HE'
+    elif 'SPIROU' in hdr0['INSTRUME']:
+        fiber_setup = 'AB'
+        instrument = 'SPIROU'
+    else:
+        raise ValueError('Unknown instrument in header')
 
+    # Number of orders in the data
+    n_orders = smart_get(files[0], f'Flux{fiber_setup}')[0].shape[0]
 
     outpaths = []
     for nsig_cut in nsig_cuts:
@@ -376,7 +385,25 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
     bervs = np.zeros(len(files))
     for i in tqdm(range(len(files)), desc='Reading BERV values', leave=False):
         # Read BERV value from each file
-        bervs[i] = smart_get(files[i], 'FluxA')[1]['BERV']
+
+
+        hdr = smart_get(files[i], f'Flux{fiber_setup}')[1]
+        if 'BERV' in hdr:
+            bervs[i] = hdr['BERV']
+
+            if 'MKT_ARV' in hdr:
+                # if we have the latest version of APERO, we can use the MKT_ARV keyword
+                # that gives the stars's velocity in m/s. We convert it to km/s and add it to the BERV
+                # to get the total velocity. This provides a slightly better correction of the full
+                # motion of the star and a slightly better template
+                bervs[i] += hdr['MKT_ARV']/1000
+        else:
+            print(f'No BERV value found in file: {files[i]}')
+            # raise an error if no BERV value is found
+            # and we cannot correct for the star's velocity. We will need to update the codes
+            # to handle this case.
+            raise ValueError('No BERV value found in file')
+
 
     for iord in tqdm(range(n_orders), desc='Processing orders', leave=False):
         # Initialize arrays to store data
@@ -390,9 +417,9 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
         # Loop through each file to read data and apply Doppler shift
         for i in tqdm(range(len(files)), desc='Reading data', leave=False):
             # Read wavelength data
-            wave[i] = smart_get(files[i], 'WaveA')[0][iord]
+            wave[i] = smart_get(files[i], f'Wave{fiber_setup}')[0][iord]
             # Read flux data
-            tmp = smart_get(files[i], 'FluxA')[0][iord]
+            tmp = smart_get(files[i], f'Flux{fiber_setup}')[0][iord]
 
             mean_bad = np.nanmean(~np.isfinite(tmp))
             if mean_bad > 0.9:
@@ -476,8 +503,6 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
             plt.hist(nsig[np.isfinite(nsig)], bins=100)
             plt.show()
 
-
-
         for isig,nsig_cut in enumerate(nsig_cuts):
             mask_ini = (nsig>nsig_cut) | (~np.isfinite(nsig))
             mask = np.array(mask_ini)
@@ -521,7 +546,15 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
             # Read the data from the FITS file
             dict_file = read_t(file)
             # Apply the mask to the flux data
-            dict_file['FluxA'][mask] = np.nan
+            dict_file[f'Flux{fiber_setup}}'][mask] = np.nan
+
+            hdr = dict_file[f'Flux{fiber_setup}_header']
+            if 'WAVEFILE' in hdr:
+                wave_sol_path = f'/space/spirou/SLINKY/data_{instrument}_updatedwavesol/'+hdr['WAVEFILE']
+                if os.path.exists(wave_sol_path):
+                    print('We have an updated wave solution and will apply it')
+                    wave_sol = fits.getdata(wave_sol_path)
+                    dict_file[f'Wave{fiber_setup}'] = wave_sol
 
             # Write the masked data to the output file
             print(f'sigma [{isig+1} / {len(nsig_cuts)}] file [{ifile+1} / {len(files)}]\tWriting file {outname}')
