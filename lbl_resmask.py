@@ -546,7 +546,7 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
             # Read the data from the FITS file
             dict_file = read_t(file)
             # Apply the mask to the flux data
-            dict_file[f'Flux{fiber_setup}}'][mask] = np.nan
+            dict_file[f'Flux{fiber_setup}'][mask] = np.nan
 
             hdr = dict_file[f'Flux{fiber_setup}_header']
             if 'WAVEFILE' in hdr:
