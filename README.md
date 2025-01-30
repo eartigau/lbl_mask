@@ -4,7 +4,7 @@
 
 There's no proper installation script yet (we're working on that). You simply download the Python script and put it in the science folder of your LBL installation. If you are 100% lazy, you can just run the following command on a linux station:
 
-```wget --no-clobber https://github.com/eartigau/lbl_mask/raw/refs/heads/main/lbl_resmask.py```
+```wget -O lbl_resmask.py https://github.com/eartigau/lbl_mask/raw/refs/heads/main/lbl_resmask.py```
 
 ## Running the script
 
