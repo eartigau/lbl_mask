@@ -77,8 +77,6 @@ def write_t(data, file):
         data_fits = data[key]
         header = data[key + '_header']
         header['EXTNAME'] = (key,'Name of the extension')
-        print(key)
-
         # find if it is a table
         if isinstance(data_fits, Table):
             hdu = fits.BinTableHDU(data_fits, header=header, name=key)
