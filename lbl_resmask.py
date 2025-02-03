@@ -7,11 +7,11 @@ from scipy.interpolate import InterpolatedUnivariateSpline as ius
 import pickle
 from tqdm import tqdm
 import warnings
-import fitsio
 from scipy.ndimage import binary_erosion,binary_dilation
 import warnings
 import argparse
 import sys
+from astropy.table import Table
 
 # Suppress RuntimeWarnings globally. We have already handled NaN values in the code.
 # and expect some slices to be all-NaN.
@@ -65,24 +65,28 @@ def write_t(data, file):
     Returns:
     None
     """
-    # Open the FITS file for reading and writing ('rw' mode), and allow overwriting if the file already exists (clobber=True).
-    with fitsio.FITS(file, 'rw', clobber=True) as outfile:
-        # Iterate over each key in the data dictionary.
-        for key in data.keys():
-            # Check if the key does not contain '_header' to avoid processing header keys.
-            if '_header' not in key:
-                # Retrieve the data associated with the current key.
-                data_to_write = data[key]
-                
-                # Retrieve the header associated with the current key by appending '_header' to the key.
-                header = data[key + '_header']
-                
-                # Set the 'EXTNAME' keyword in the header to the current key. This names the extension in the FITS file.
-                header['EXTNAME'] = key
-                
-                # Write the data and its header to the FITS file as a new extension.
-                # The extname parameter explicitly sets the extension name in the FITS file.
-                outfile.write(data_to_write, header=header, extname=key)
+
+    # set primary hdu
+    hdul0 = fits.PrimaryHDU(header=data['_header'])
+
+    hdus = [hdul0]
+    for key in data.keys():
+        if '_header' in key:
+            continue
+
+        data_fits = data[key]
+        header = data[key + '_header']
+        header['EXTNAME'] = (key,'Name of the extension')
+        print(key)
+
+        # find if it is a table
+        if isinstance(data_fits, Table):
+            hdu = fits.BinTableHDU(data_fits, header=header, name=key)
+        else:
+            hdu = fits.ImageHDU(data_fits, header=header, name=key)
+        hdus.append(hdu)
+
+    fits.HDUList(hdus).writeto(file, overwrite=True)        
 
 def read_t(file):
     """
@@ -97,23 +101,18 @@ def read_t(file):
     Returns:
     dict: A dictionary containing the data and headers from all the extensions in the FITS file.
     """
-    # Open the FITS file for reading.
-    with fitsio.FITS(file) as infile:
-        # Initialize an empty dictionary to store the data and headers.
-        data = dict()
-        
-        # Iterate over each Header Data Unit (HDU) in the FITS file.
-        for hdu in infile:
-            # Get the extension name of the current HDU.
-            key = hdu.get_extname()
-            
-            # Read the data from the current HDU and store it in the dictionary with the extension name as the key.
-            data[key] = hdu.read()
-            
-            # Read the header from the current HDU and store it in the dictionary with the key appended by '_header'.
-            data[key + '_header'] = hdu.read_header()
     
-    # Return the dictionary containing all the data and headers.
+    data = dict()
+
+    with fits.open(file) as hdul:
+        for hdu in hdul:
+            if 'EXTNAME' in hdu.header:
+                key = hdu.header['EXTNAME']
+                data[key] = hdu.data
+                data[key + '_header'] = hdu.header
+            else:
+                data['_header'] = hdu.header
+    
     return data
 
 def save_pickle(filename, variable):
