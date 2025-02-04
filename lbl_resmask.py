@@ -399,28 +399,6 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
     # Width parameter for lowpass filter
     wpwidth = 51
 
-    # Initialize array to store BERV values
-    bervs = np.zeros(len(files))
-    for i in tqdm(range(len(files)), desc='Reading BERV values', leave=False):
-        # Read BERV value from each file
-
-
-        hdr = smart_get(files[i], f'Flux{fiber_setup}')[1]
-        if 'BERV' in hdr:
-            bervs[i] = hdr['BERV']
-
-            if 'MKT_ARV' in hdr:
-                # if we have the latest version of APERO, we can use the MKT_ARV keyword
-                # that gives the stars's velocity in m/s. We convert it to km/s and add it to the BERV
-                # to get the total velocity. This provides a slightly better correction of the full
-                # motion of the star and a slightly better template
-                bervs[i] -= hdr['MKT_ARV']/1000
-        else:
-            print(f'No BERV value found in file: {files[i]}')
-            # raise an error if no BERV value is found
-            # and we cannot correct for the star's velocity. We will need to update the codes
-            # to handle this case.
-            raise ValueError('No BERV value found in file')
 
 
     if not doplot:
@@ -432,6 +410,31 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
     nsigma_map_outname = 'nsig_residuals_'+obj+'.fits'
 
     if not os.path.exists(nsigma_map_outname):
+        # Initialize array to store BERV values
+        bervs = np.zeros(len(files))
+        for i in tqdm(range(len(files)), desc='Reading BERV values', leave=False):
+            # Read BERV value from each file
+
+
+            hdr = smart_get(files[i], f'Flux{fiber_setup}')[1]
+            if 'BERV' in hdr:
+                bervs[i] = hdr['BERV']
+
+                if 'MKT_ARV' in hdr:
+                    # if we have the latest version of APERO, we can use the MKT_ARV keyword
+                    # that gives the stars's velocity in m/s. We convert it to km/s and add it to the BERV
+                    # to get the total velocity. This provides a slightly better correction of the full
+                    # motion of the star and a slightly better template
+                    bervs[i] -= hdr['MKT_ARV']/1000
+            else:
+                print(f'No BERV value found in file: {files[i]}')
+                # raise an error if no BERV value is found
+                # and we cannot correct for the star's velocity. We will need to update the codes
+                # to handle this case.
+                raise ValueError('No BERV value found in file')
+
+
+
         nsig_map = np.zeros((n_orders, 4088))
         for iord in tqdm(orders, desc='Processing orders', leave=False):
             # Initialize arrays to store data
