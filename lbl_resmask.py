@@ -374,10 +374,10 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
     files = files[np.argsort(files)]
 
     hdr0 = smart_get(files[0], 'FluxA')[1]
-    if 'NIRPS' in hdr0['INSTRUME']:
+    if 'NIRPS' in hdr0['INSTRUME'].upper():
         fiber_setup = 'A'
         instrument = 'NIRPS_HE'
-    elif 'SPIROU' in hdr0['INSTRUME']:
+    elif 'SPIROU' in hdr0['INSTRUME'].upper():
         fiber_setup = 'AB'
         instrument = 'SPIROU'
     else:
