@@ -561,9 +561,9 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
                         #so we can see the blocks that are masked
                         mask2 = np.zeros_like(mask, dtype = float)+np.nan
                         mask2[np.where(mask == 1)] = 0
-                        ax[2,1].plot(p16+mask2, color='red', marker='.', linestyle='-')
-                        ax[2,1].plot(med_res+mask2, color='red', marker='.', linestyle='-')
-                        ax[2,1].plot(p84+mask2, color='red', marker='.', linestyle='-')
+                        ax[2,1].plot(p16+mask2, color='red', marker='o', linestyle='-')
+                        ax[2,1].plot(med_res+mask2, color='red', marker='o', linestyle='-')
+                        ax[2,1].plot(p84+mask2, color='red', marker='o', linestyle='-')
 
             if doplot:
                 plt.show()
