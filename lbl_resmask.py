@@ -13,6 +13,29 @@ import argparse
 import sys
 from astropy.table import Table
 
+def median_sigma_n():
+
+    """
+    Compute the median and sigma of the median of n random values.
+
+    This function generates n random values and computes the median and sigma of the median.
+
+    Parameters:
+    n (int, optional): The number of random values to generate. Default is 100.
+
+    Returns:
+    float: The median of the median of n random values.
+    float: The sigma of the median of n random values.
+    """
+
+    vals =  np.array(10**(np.arange(7)/2.+1),dtype =int)
+
+    # Generate n random values
+    for n in vals:
+        factor = np.nanstd(np.nanmedian(np.random.normal(0,1, [n,1000]),axis=0))*np.sqrt(n)
+        print(factor, n)
+
+
 # Suppress RuntimeWarnings globally. We have already handled NaN values in the code.
 # and expect some slices to be all-NaN.
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -474,15 +497,21 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
 
 
         with warnings.catch_warnings() as _: # Suppress warnings
-            p16, p84 = np.nanpercentile(residual, [16, 84], axis=0)
+            p16, med_res, p84 = np.nanpercentile(residual, [16,50, 84], axis=0)
 
         # Apply lowpass filter to effective RMS
         effective_rms = lowpassfilter((p84 - p16) / 2, wpwidth)
+        nvalid = np.sum(np.isfinite(residual), axis=0)
         p16 /= effective_rms
+        med_res /= effective_rms
         p84 /= effective_rms
 
+        nsig = med_res*np.sqrt(nvalid)/1.25
+        # this is a factor to correct for the fact that the residuals are not normally distributed
 
-        nsig = np.sqrt( ((1+p16)/sig(p16))**2+((p84-1)/sig(p84))**2)
+
+        #nsig = np.sqrt( ((1+p16)/sig(p16))**2+((p84-1)/sig(p84))**2)
+        #nsig = np.abs(med)
 
         # Plot data cubes and residuals if required
         if doplot:
@@ -501,7 +530,7 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
             ax[1,0].set(title='Stellar-restframe model')
 
             amp = (p99-p1)
-            moy = (p99+p1)/2
+            #moy = (p99+p1)/2
             p1,p99 = -amp/2,amp/2
             ax[0,1].imshow(residual, aspect='auto', origin='lower', vmin=p1, vmax=p99)
             ax[0,1].set(xlim=[2000, 2500])
@@ -518,27 +547,29 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
             ax[2,0].set(xlim=[2000, 2500])
             ax[2,0].set(title='Median stellar spectrum')
 
-            ax[2,1].set(ylim = [-4,4])
+            ax[2,1].set(ylim = [-nsig_cuts[0]*1.5,nsig_cuts[0]*1.5])
             ax[2,1].plot(p16, color = 'grey',alpha = 0.5)
+            ax[2,1].plot(med_res, color = 'purple',alpha = 0.5)
             ax[2,1].plot(p84, color = 'grey',alpha = 0.5)
             ax[2,1].set(title = '1-sigma stats')
 
             #plt.show()
 
         for isig,nsig_cut in enumerate(nsig_cuts):
-            mask_ini = (nsig>nsig_cut) | (~np.isfinite(nsig))
+            mask_ini = (np.abs(nsig)>nsig_cut) | (~np.isfinite(nsig))
             mask = np.array(mask_ini)
-            singles = (np.convolve(mask,np.ones(3),mode = 'same') == 1) & mask
-            mask[singles] = False
-            mask = binary_dilation(mask, structure=np.ones(5), output=mask)
+            #singles = (np.convolve(mask,np.ones(3),mode = 'same') == 1) & mask
+            #mask[singles] = False
+            #mask = binary_dilation(mask, structure=np.ones(5), output=mask)
 
             if isig ==0:
                 if doplot:
                     #have a 'fill' mask to show the pixels that are masked. The masking in done in blocks
                     #so we can see the blocks that are masked
                     mask2 = np.zeros_like(mask, dtype = float)+np.nan
-                    mask2[mask] = 0
+                    mask2[np.where(mask == 1)] = 0
                     ax[2,1].plot(p16+mask2, color = 'red',alpha = 1.0)
+                    ax[2,1].plot(med_res+mask2, color = 'red',alpha = 1.0)
                     ax[2,1].plot(p84+mask2, color = 'red',alpha = 1.0)
 
         if doplot:
