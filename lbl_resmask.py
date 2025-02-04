@@ -515,29 +515,29 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
                     ax[1, col].get_shared_y_axes().joined(ax[0, col], ax[1, col])
                 p1,p99 = np.nanpercentile(cube_detector, [1, 99])
                 ax[0,0].imshow(cube_detector, aspect='auto', origin='lower', vmin=p1, vmax=p99)
-                ax[0,0].set(xlim=[2000, 2500])
+                #ax[0,0].set(xlim=[2000, 2500])
                 ax[0,0].set(title='Detector-space data')
 
                 ax[1,0].imshow(cube_model_star, aspect='auto', origin='lower', vmin=p1, vmax=p99)
-                ax[1,0].set(xlim=[2000, 2500])
+                #ax[1,0].set(xlim=[2000, 2500])
                 ax[1,0].set(title='Stellar-restframe model')
 
                 amp = (p99-p1)
                 #moy = (p99+p1)/2
                 p1,p99 = -amp/2,amp/2
                 ax[0,1].imshow(residual, aspect='auto', origin='lower', vmin=p1, vmax=p99)
-                ax[0,1].set(xlim=[2000, 2500])
+                #ax[0,1].set(xlim=[2000, 2500])
                 ax[0,1].set(title='Residuals in detector space')
 
                 residual2 = residual.copy()
                 for i in tqdm(range(len(files)), desc='Processing model', leave=False):
                     residual2[i] = doppler_spline(wave[i], residual2[i], -bervs[i])
                 ax[1,1].imshow(residual2, aspect='auto', origin='lower', vmin=p1, vmax=p99)
-                ax[1,1].set(xlim=[2000, 2500])
+                #ax[1,1].set(xlim=[2000, 2500])
                 ax[1,1].set(title='Residuals in stellar restframe')
 
                 ax[2,0].plot(med)
-                ax[2,0].set(xlim=[2000, 2500])
+                #ax[2,0].set(xlim=[2000, 2500])
                 ax[2,0].set(title='Median stellar spectrum')
 
                 ax[2,1].set(ylim = [-nsig_cuts[0]*1.5,nsig_cuts[0]*1.5])
