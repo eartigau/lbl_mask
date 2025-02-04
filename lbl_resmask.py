@@ -396,10 +396,6 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
             os.makedirs(outpath)
         outpaths.append(outpath)
 
-    # Initialize array to store the full mask
-    full_mask = np.zeros([n_orders, 4088, len(nsig_cuts)])
-
-
     # Width parameter for lowpass filter
     wpwidth = 51
 
@@ -433,165 +429,157 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
         # in steps of 10, starting at 5
         orders = np.arange(5, n_orders, 10)
 
-    for iord in tqdm(orders, desc='Processing orders', leave=False):
-        # Initialize arrays to store data
-        cube_detector = np.zeros((len(files), 4088))+np.nan
-        cube_stellar = np.zeros((len(files), 4088))+np.nan
-        cube_model_star = np.zeros((len(files), 4088))+np.nan
-        wave = np.zeros((len(files), 4088))
+    nsigma_map_outname = 'nsig_residuals_'+obj+'.fits'
 
-        # Initialize array to track skipped files
-        skipped = np.zeros(len(files))
-        # Loop through each file to read data and apply Doppler shift
-        for i in tqdm(range(len(files)), desc='Reading data', leave=False):
-            # Read wavelength data
-            wave[i] = smart_get(files[i], f'Wave{fiber_setup}')[0][iord]
-            # Read flux data
-            tmp = smart_get(files[i], f'Flux{fiber_setup}')[0][iord]
+    if not os.path.exists(nsigma_map_outname):
+        nsig_map = np.zeros((n_orders, 4088))
+        for iord in tqdm(orders, desc='Processing orders', leave=False):
+            # Initialize arrays to store data
+            cube_detector = np.zeros((len(files), 4088))+np.nan
+            cube_stellar = np.zeros((len(files), 4088))+np.nan
+            cube_model_star = np.zeros((len(files), 4088))+np.nan
+            wave = np.zeros((len(files), 4088))
 
-            mean_bad = np.nanmean(~np.isfinite(tmp))
-            if mean_bad > 0.9:
-                skipped[i] = 1
+            # Initialize array to track skipped files
+            skipped = np.zeros(len(files))
+            # Loop through each file to read data and apply Doppler shift
+            for i in tqdm(range(len(files)), desc='Reading data', leave=False):
+                # Read wavelength data
+                wave[i] = smart_get(files[i], f'Wave{fiber_setup}')[0][iord]
+                # Read flux data
+                tmp = smart_get(files[i], f'Flux{fiber_setup}')[0][iord]
+
+                mean_bad = np.nanmean(~np.isfinite(tmp))
+                if mean_bad > 0.9:
+                    skipped[i] = 1
+                    continue
+
+                # Normalize flux data
+                with np.errstate(all='ignore'):
+                    tmp/=np.nanmedian(tmp)
+                
+                cube_detector[i] = tmp
+                cube_stellar[i] = doppler_spline(wave[i], tmp, -bervs[i])
+
+            # Skip the order if more than 50% of the files were skipped
+            if np.mean(skipped) > 0.5:
                 continue
 
-            # Normalize flux data
+            # Suppress the specific RuntimeWarning about All-NaN slices
             with np.errstate(all='ignore'):
-                tmp/=np.nanmedian(tmp)
-            
-            cube_detector[i] = tmp
-            cube_stellar[i] = doppler_spline(wave[i], tmp, -bervs[i])
+                # Calculate median of processed data
+                med = med_berv_bin(cube_stellar, bervs)
 
-        # Skip the order if more than 50% of the files were skipped
-        if np.mean(skipped) > 0.5:
-            continue
+            g = np.isfinite(med)
 
-        # Suppress the specific RuntimeWarning about All-NaN slices
-        with np.errstate(all='ignore'):
-            # Calculate median of processed data
-            med = med_berv_bin(cube_stellar, bervs)
-
-        g = np.isfinite(med)
-
-        if np.mean(g)<0.1:
-            print('Too few valid pixels')
-            continue
+            if np.mean(g)<0.1:
+                print('Too few valid pixels')
+                continue
 
 
-        for i in tqdm(range(len(files)), desc='Processing model', leave=False):
-            cube_model_star[i] = doppler_spline(wave[i], med, bervs[i])
-
-        # Calculate residuals
-        residual = cube_detector - cube_model_star
-
-        for i in tqdm(range(len(files)), desc='Processing residuals', leave=False):
-            # Apply lowpass filter to residuals
-            res = np.array(residual[i])
-            res -= lowpassfilter(res, wpwidth)
-            nsig = res/sig(res)
-            mask = np.zeros_like(res, dtype = float)
-            mask[np.abs(nsig)>3] = np.nan
-            res -= lowpassfilter(res+mask, wpwidth)
-            residual[i] = res
-
-            #residual[i] -= lowpassfilter(residual[i], wpwidth)
-
-
-        with warnings.catch_warnings() as _: # Suppress warnings
-            p16, med_res, p84 = np.nanpercentile(residual, [16,50, 84], axis=0)
-
-        # Apply lowpass filter to effective RMS
-        effective_rms = lowpassfilter((p84 - p16) / 2, wpwidth)
-        nvalid = np.sum(np.isfinite(residual), axis=0)
-        p16 /= effective_rms
-        med_res /= effective_rms
-        p84 /= effective_rms
-
-        nsig = med_res*np.sqrt(nvalid)/1.25
-        # this is a factor to correct for the fact that the residuals are not normally distributed
-
-
-        #nsig = np.sqrt( ((1+p16)/sig(p16))**2+((p84-1)/sig(p84))**2)
-        #nsig = np.abs(med)
-
-        # Plot data cubes and residuals if required
-        if doplot:
-            fig, ax = plt.subplots(nrows=3, ncols=2, figsize=(10, 10), sharex=True, sharey=False)
-
-            # Share y-axis between rows 0 and 1
-            for col in range(2):
-                ax[1, col].get_shared_y_axes().joined(ax[0, col], ax[1, col])
-            p1,p99 = np.nanpercentile(cube_detector, [1, 99])
-            ax[0,0].imshow(cube_detector, aspect='auto', origin='lower', vmin=p1, vmax=p99)
-            ax[0,0].set(xlim=[2000, 2500])
-            ax[0,0].set(title='Detector-space data')
-
-            ax[1,0].imshow(cube_model_star, aspect='auto', origin='lower', vmin=p1, vmax=p99)
-            ax[1,0].set(xlim=[2000, 2500])
-            ax[1,0].set(title='Stellar-restframe model')
-
-            amp = (p99-p1)
-            #moy = (p99+p1)/2
-            p1,p99 = -amp/2,amp/2
-            ax[0,1].imshow(residual, aspect='auto', origin='lower', vmin=p1, vmax=p99)
-            ax[0,1].set(xlim=[2000, 2500])
-            ax[0,1].set(title='Residuals in detector space')
-
-            residual2 = residual.copy()
             for i in tqdm(range(len(files)), desc='Processing model', leave=False):
-                residual2[i] = doppler_spline(wave[i], residual2[i], -bervs[i])
-            ax[1,1].imshow(residual2, aspect='auto', origin='lower', vmin=p1, vmax=p99)
-            ax[1,1].set(xlim=[2000, 2500])
-            ax[1,1].set(title='Residuals in stellar restframe')
+                cube_model_star[i] = doppler_spline(wave[i], med, bervs[i])
 
-            ax[2,0].plot(med)
-            ax[2,0].set(xlim=[2000, 2500])
-            ax[2,0].set(title='Median stellar spectrum')
+            # Calculate residuals
+            residual = cube_detector - cube_model_star
 
-            ax[2,1].set(ylim = [-nsig_cuts[0]*1.5,nsig_cuts[0]*1.5])
-            ax[2,1].plot(p16, color = 'grey',alpha = 0.5)
-            ax[2,1].plot(med_res, color = 'purple',alpha = 0.5)
-            ax[2,1].plot(p84, color = 'grey',alpha = 0.5)
-            ax[2,1].set(title = '1-sigma stats')
+            for i in tqdm(range(len(files)), desc='Processing residuals', leave=False):
+                # Apply lowpass filter to residuals
+                res = np.array(residual[i])
+                res -= lowpassfilter(res, wpwidth)
+                nsig = res/sig(res)
+                mask = np.zeros_like(res, dtype = float)
+                mask[np.abs(nsig)>3] = np.nan
+                res -= lowpassfilter(res+mask, wpwidth)
+                residual[i] = res
 
-            #plt.show()
+            with warnings.catch_warnings() as _: # Suppress warnings
+                p16, med_res, p84 = np.nanpercentile(residual, [16,50, 84], axis=0)
 
-        for isig,nsig_cut in enumerate(nsig_cuts):
-            mask_ini = (np.abs(nsig)>nsig_cut) | (~np.isfinite(nsig))
-            mask = np.array(mask_ini)
-            #singles = (np.convolve(mask,np.ones(3),mode = 'same') == 1) & mask
-            #mask[singles] = False
-            #mask = binary_dilation(mask, structure=np.ones(5), output=mask)
+            # Apply lowpass filter to effective RMS
+            effective_rms = lowpassfilter((p84 - p16) / 2, wpwidth)
+            nvalid = np.sum(np.isfinite(residual), axis=0)
+            p16 /= effective_rms
+            med_res /= effective_rms
+            p84 /= effective_rms
 
-            if isig ==0:
-                if doplot:
-                    #have a 'fill' mask to show the pixels that are masked. The masking in done in blocks
-                    #so we can see the blocks that are masked
-                    mask2 = np.zeros_like(mask, dtype = float)+np.nan
-                    mask2[np.where(mask == 1)] = 0
-                    ax[2,1].plot(p16+mask2, color = 'red',alpha = 1.0)
-                    ax[2,1].plot(med_res+mask2, color = 'red',alpha = 1.0)
-                    ax[2,1].plot(p84+mask2, color = 'red',alpha = 1.0)
+            nsig = med_res*np.sqrt(nvalid)/1.25
+            # this is a factor to correct for the fact that the residuals are not normally distributed
 
-        if doplot:
-            plt.show()
+            # Plot data cubes and residuals if required
+            if doplot:
+                fig, ax = plt.subplots(nrows=3, ncols=2, figsize=(10, 10), sharex=True, sharey=False)
 
-        full_mask[iord, :, isig] = mask
+                # Share y-axis between rows 0 and 1
+                for col in range(2):
+                    ax[1, col].get_shared_y_axes().joined(ax[0, col], ax[1, col])
+                p1,p99 = np.nanpercentile(cube_detector, [1, 99])
+                ax[0,0].imshow(cube_detector, aspect='auto', origin='lower', vmin=p1, vmax=p99)
+                ax[0,0].set(xlim=[2000, 2500])
+                ax[0,0].set(title='Detector-space data')
+
+                ax[1,0].imshow(cube_model_star, aspect='auto', origin='lower', vmin=p1, vmax=p99)
+                ax[1,0].set(xlim=[2000, 2500])
+                ax[1,0].set(title='Stellar-restframe model')
+
+                amp = (p99-p1)
+                #moy = (p99+p1)/2
+                p1,p99 = -amp/2,amp/2
+                ax[0,1].imshow(residual, aspect='auto', origin='lower', vmin=p1, vmax=p99)
+                ax[0,1].set(xlim=[2000, 2500])
+                ax[0,1].set(title='Residuals in detector space')
+
+                residual2 = residual.copy()
+                for i in tqdm(range(len(files)), desc='Processing model', leave=False):
+                    residual2[i] = doppler_spline(wave[i], residual2[i], -bervs[i])
+                ax[1,1].imshow(residual2, aspect='auto', origin='lower', vmin=p1, vmax=p99)
+                ax[1,1].set(xlim=[2000, 2500])
+                ax[1,1].set(title='Residuals in stellar restframe')
+
+                ax[2,0].plot(med)
+                ax[2,0].set(xlim=[2000, 2500])
+                ax[2,0].set(title='Median stellar spectrum')
+
+                ax[2,1].set(ylim = [-nsig_cuts[0]*1.5,nsig_cuts[0]*1.5])
+                ax[2,1].plot(p16, color = 'grey',alpha = 0.5)
+                ax[2,1].plot(med_res, color = 'purple',alpha = 0.5)
+                ax[2,1].plot(p84, color = 'grey',alpha = 0.5)
+                ax[2,1].set(title = '1-sigma stats')
+
+                #plt.show()
+
+            for isig,nsig_cut in enumerate(nsig_cuts):
+                mask_ini = (np.abs(nsig)>nsig_cut) | (~np.isfinite(nsig))
+                mask = np.array(mask_ini)
+                #singles = (np.convolve(mask,np.ones(3),mode = 'same') == 1) & mask
+                #mask[singles] = False
+                #mask = binary_dilation(mask, structure=np.ones(5), output=mask)
+
+                if isig ==0:
+                    if doplot:
+                        #have a 'fill' mask to show the pixels that are masked. The masking in done in blocks
+                        #so we can see the blocks that are masked
+                        mask2 = np.zeros_like(mask, dtype = float)+np.nan
+                        mask2[np.where(mask == 1)] = 0
+                        ax[2,1].plot(p16+mask2, color = 'red',alpha = 1.0)
+                        ax[2,1].plot(med_res+mask2, color = 'red',alpha = 1.0)
+                        ax[2,1].plot(p84+mask2, color = 'red',alpha = 1.0)
+
+            if doplot:
+                plt.show()
+
+            nsig_map[iord, :] = nsig
+        
+        fits.writeto(nsigma_map_outname, nsig_map, overwrite=True)
 
     if doplot:
         return
 
-    mask_names = []
-    for isig,nsig_cut in enumerate(nsig_cuts):
-        outname = f'mask_{obj}_{nsig_cut:.1f}sig.fits'
-        fits.writeto(outname, full_mask[:, :, isig].astype(int), overwrite=True)
-        mask_names.append(outname)
 
-
+    nsig = fits.getdata(nsigma_map_outname)
     for isig,nsig_cut in enumerate(nsig_cuts):
-        # Read the mask data
-        mask = fits.getdata(mask_names[isig])
         # Convert the mask to boolean
-        mask = mask.astype(bool)
+        mask = (np.abs(nsig) > nsig_cut).astype(bool)
 
         # Loop through each file to apply the mask
         for ifile, file in enumerate(files):
