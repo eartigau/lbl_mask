@@ -12,6 +12,8 @@ import warnings
 import argparse
 import sys
 from astropy.table import Table
+from wpca import WPCA#, EMPCA
+from etienne_tools import lin_mini
 
 def median_sigma_n():
 
@@ -89,8 +91,14 @@ def write_t(data, file):
     None
     """
 
+
+
     # set primary hdu
-    hdul0 = fits.PrimaryHDU(header=data['_header'])
+    if '_header' not in data:
+        data['_header'] = fits.Header()
+        hdul0 = fits.PrimaryHDU(header=data['_header'])
+    else:
+        hdul0 = fits.PrimaryHDU(header=data['_header'])
 
     hdus = [hdul0]
     for key in data.keys():
@@ -98,13 +106,16 @@ def write_t(data, file):
             continue
 
         data_fits = data[key]
-        header = data[key + '_header']
+        if key+'_header' not in data:
+            header = fits.Header()
+        else:
+            header = data[key + '_header']
         header['EXTNAME'] = (key,'Name of the extension')
         # find if it is a table
         if isinstance(data_fits, Table):
-            hdu = fits.BinTableHDU(data_fits, header=header, name=key)
+            hdu = fits.BinTableHDU(data_fits, header=header)#, name=key)
         else:
-            hdu = fits.ImageHDU(data_fits, header=header, name=key)
+            hdu = fits.ImageHDU(data_fits, header=header)#, name=key)
         hdus.append(hdu)
 
     fits.HDUList(hdus).writeto(file, overwrite=True)        
@@ -190,6 +201,7 @@ def smart_get(file, extension):
     if not os.path.exists(pkl_outname):
         # Read data from the FITS file
         dict_file = read_t(file)
+        print('saving pickle')
         # Save data to the pickle file
         save_pickle(pkl_outname, dict_file)
     else:
@@ -325,6 +337,26 @@ def doppler_spline(wave_sp, sp, dv):
 
     return sp2
 
+def get_berv(hdr):
+    if 'BERV' in hdr:
+        berv = hdr['BERV']
+
+        if 'MKT_ARV' in hdr:
+            # if we have the latest version of APERO, we can use the MKT_ARV keyword
+            # that gives the stars's velocity in m/s. We convert it to km/s and add it to the BERV
+            # to get the total velocity. This provides a slightly better correction of the full
+            # motion of the star and a slightly better template
+            berv -= hdr['MKT_ARV']/1000
+    else:
+        print(f'No BERV value found in file')
+        # raise an error if no BERV value is found
+        # and we cannot correct for the star's velocity. We will need to update the codes
+        # to handle this case.
+        raise ValueError('No BERV value found in file')
+
+    return berv
+
+
 def sig(vals):
     """
     Calculate the sigma value (standard deviation) from percentiles.
@@ -342,7 +374,7 @@ def sig(vals):
         n1, p1 = np.nanpercentile(vals, [16, 84])
     return (p1-n1)/2
 
-def construct_residuals(obj, nsig_cuts = [3], doplot = False):
+def construct_residuals(obj, nsig_cuts = [3], doplot = False, pca = False, Npca = 10):
     """
     Construct residuals for a given object and nsig_cut value.
 
@@ -389,7 +421,10 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
     outpaths = []
     for nsig_cut in nsig_cuts:
         # Output path for masked files
-        outpath = f'{obj}mask{nsig_cut:.1f}sig'
+        if not pca:
+            outpath = f'{obj}mask{nsig_cut:.1f}sig'
+        else:
+            outpath = f'{obj}pca{nsig_cut:.1f}sig'
         # Create the output directory if it does not exist
         if not os.path.exists(outpath):
             print(f'Creating directory: {outpath}')
@@ -417,25 +452,18 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
 
 
             hdr = smart_get(files[i], f'Flux{fiber_setup}')[1]
-            if 'BERV' in hdr:
-                bervs[i] = hdr['BERV']
+            bervs[i] = get_berv(hdr)
 
-                if 'MKT_ARV' in hdr:
-                    # if we have the latest version of APERO, we can use the MKT_ARV keyword
-                    # that gives the stars's velocity in m/s. We convert it to km/s and add it to the BERV
-                    # to get the total velocity. This provides a slightly better correction of the full
-                    # motion of the star and a slightly better template
-                    bervs[i] -= hdr['MKT_ARV']/1000
-            else:
-                print(f'No BERV value found in file: {files[i]}')
-                # raise an error if no BERV value is found
-                # and we cannot correct for the star's velocity. We will need to update the codes
-                # to handle this case.
-                raise ValueError('No BERV value found in file')
+
 
 
 
         nsig_map = np.zeros((n_orders, 4088))
+        pca_cube = np.zeros((Npca,n_orders, 4088))
+        median_template = np.zeros((n_orders, 4088))
+        wave_template = smart_get(files[0], f'Wave{fiber_setup}')[0]
+
+
         for iord in tqdm(orders, desc='Processing orders', leave=False):
             # Initialize arrays to store data
             cube_detector = np.zeros((len(files), 4088))+np.nan
@@ -447,10 +475,13 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
             skipped = np.zeros(len(files))
             # Loop through each file to read data and apply Doppler shift
             for i in tqdm(range(len(files)), desc='Reading data', leave=False):
+
+                dd = read_t(files[i])
                 # Read wavelength data
-                wave[i] = smart_get(files[i], f'Wave{fiber_setup}')[0][iord]
+                wave[i] = dd[f'Wave{fiber_setup}'][iord]
+
                 # Read flux data
-                tmp = smart_get(files[i], f'Flux{fiber_setup}')[0][iord]
+                tmp = dd[f'Flux{fiber_setup}'][iord]
 
                 mean_bad = np.nanmean(~np.isfinite(tmp))
                 if mean_bad > 0.9:
@@ -471,9 +502,9 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
             # Suppress the specific RuntimeWarning about All-NaN slices
             with np.errstate(all='ignore'):
                 # Calculate median of processed data
-                med = med_berv_bin(cube_stellar, bervs)
+                median_template[iord,:] = med_berv_bin(cube_stellar, bervs)
 
-            g = np.isfinite(med)
+            g = np.isfinite(median_template[iord,:])
 
             if np.mean(g)<0.1:
                 print('Too few valid pixels')
@@ -481,10 +512,17 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
 
 
             for i in tqdm(range(len(files)), desc='Processing model', leave=False):
-                cube_model_star[i] = doppler_spline(wave[i], med, bervs[i])
+                cube_model_star[i] = doppler_spline(wave[i], median_template[iord,:], bervs[i])
 
             # Calculate residuals
             residual = cube_detector - cube_model_star
+
+            # weights for WPCA
+            weights = np.ones_like(residual)
+            for i in range(len(files)):
+                weights[i] = 1/sig(residual[i])
+            weights[~np.isfinite(residual)] = 0
+
 
             for i in tqdm(range(len(files)), desc='Processing residuals', leave=False):
                 # Apply lowpass filter to residuals
@@ -508,6 +546,23 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
 
             nsig = med_res*np.sqrt(nvalid)/1.25
             # this is a factor to correct for the fact that the residuals are not normally distributed
+
+            mask_fit_pca = np.zeros( residual.shape[1], dtype = bool)
+            mask_fit_pca[np.abs(nsig)>3] = True
+            # dilate with a 3 pixel kernel
+            mask_fit_pca = binary_dilation(mask_fit_pca, structure=np.ones(3), output=mask_fit_pca)
+
+            weights2 = weights[:,mask_fit_pca].copy()
+            residual2 = residual[:,mask_fit_pca].copy()
+            residual2[~np.isfinite(residual2)] = 0
+
+            pca = WPCA(Npca)
+            pca.fit(residual2, weights2)
+
+            pca_components = np.zeros((Npca, 4088))
+            pca_components[:,mask_fit_pca] = pca.components_
+
+            pca_cube[:,iord,:] = pca_components
 
             # Plot data cubes and residuals if required
             if doplot:
@@ -539,7 +594,7 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
                 #ax[1,1].set(xlim=[2000, 2500])
                 ax[1,1].set(title='Residuals in stellar restframe')
 
-                ax[2,0].plot(med)
+                ax[2,0].plot(median_template[iord,:])
                 #ax[2,0].set(xlim=[2000, 2500])
                 ax[2,0].set(title='Median stellar spectrum')
 
@@ -572,18 +627,37 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
                 plt.show()
 
             nsig_map[iord, :] = nsig
+
+        nsigmap_dict = {'nsig': nsig_map, 'pca_cube': pca_cube, 'median_template': median_template, 'wave_template': wave_template}
+        keys = list(nsigmap_dict.keys())
+        # for each of the initial keys, add an empty header
+        for key in keys:
+            nsigmap_dict[key+'_header'] = fits.Header()
+        # add an empty header to all
+        nsigmap_dict['_header'] = fits.Header()
         
-        fits.writeto(nsigma_map_outname, nsig_map, overwrite=True)
+        write_t(nsigmap_dict, nsigma_map_outname)
 
     if doplot:
         return
 
 
-    nsig = fits.getdata(nsigma_map_outname)
-    for isig,nsig_cut in enumerate(nsig_cuts):
-        # Convert the mask to boolean
-        mask = (np.abs(nsig) > nsig_cut).astype(bool)
+    nsigmap = fits.getdata(nsigma_map_outname,'nsig')
+    pca_cube = fits.getdata(nsigma_map_outname,'pca_cube')
+    template = fits.getdata(nsigma_map_outname,'median_template')
 
+    # we have a problem if the number of PCA components is larger than the number of slices
+    # in the pca_cube. We have an error message in this case.
+    if Npca > pca_cube.shape[0]:
+        errmsg = f'Number of PCA components requested ({Npca}) is larger than the number of slices in the PCA cube ({pca_cube.shape[0]})'
+        raise ValueError(errmsg)
+
+    if Npca != pca_cube.shape[1]:
+        pca_cube = pca_cube[:Npca]
+    
+
+
+    for isig,nsig_cut in enumerate(nsig_cuts):
         # Loop through each file to apply the mask
         for ifile, file in enumerate(files):
             # Create the output file name
@@ -592,12 +666,45 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False):
             # Skip the file if it already exists
             if os.path.exists(outname):
                 print(f'Skipping {outname}')
-                continue
+                continue 
 
             # Read the data from the FITS file
             dict_file = read_t(file)
             # Apply the mask to the flux data
-            dict_file[f'Flux{fiber_setup}'][mask] = np.nan
+            sp = dict_file[f'Flux{fiber_setup}']
+
+            if not pca:
+                mask = np.abs(nsigmap) > nsig_cut
+                sp[mask] = np.nan
+            
+            else:
+                wave = dict_file[f'Wave{fiber_setup}']
+                berv = get_berv(dict_file[f'Flux{fiber_setup}_header'])
+                for iord in range(n_orders):
+                    pca_ord = pca_cube[:,iord,:]
+
+                    sp_ord = sp[iord]
+                    wave_ord = wave[iord]
+                    template_ord = doppler_spline(wave_ord, template[iord], berv)
+                    ratio = np.nanmedian(sp_ord/template_ord)
+                    template_ord *= ratio
+                    lowf = lowpassfilter(sp_ord/template_ord)
+                    diff = sp_ord - template_ord*lowf
+
+                    if np.mean(np.isfinite(diff))<0.1:
+                        continue
+
+                    amps,recon = lin_mini(diff,pca_ord)
+                    # fractional contribution considering the number of sigma
+                    p1 = np.exp(-0.5*nsigmap[iord]**2)
+                    p2 = np.exp(-0.5*nsig_cut**2)
+                    p_valid = p1/(p1+p2)
+                    p_invalid = 1-p_valid
+
+                    sp[iord] -= (recon*p_invalid)
+                dict_file[f'Flux{fiber_setup}'] = sp
+
+            #dict_file[f'Flux{fiber_setup}'][mask] = np.nan
 
             hdr = dict_file[f'Flux{fiber_setup}_header']
             if 'WAVEFILE' in hdr:
@@ -620,10 +727,14 @@ if __name__ == "__main__":
     parser.add_argument('objs', type=str, help="Comma-separated list of object names.")
     parser.add_argument('nsig_cuts', type=str, help="Comma-separated list of sigma cut values.")
     parser.add_argument('--doplot', action='store_true', help="Flag to control whether plots are generated for visual inspection.")
+    parser.add_argument('--pca', action='store_true', help="Flag to set PCA to True.")
+    parser.add_argument('--Npca', type=int, help="Number of PCA components to use. Must be an integer.")
     
-    # If no arguments are provided, print the help message and exit
+    # If no arguments are provided, print the help message and an example, then exit
     if len(sys.argv) == 1:
         parser.print_help(sys.stderr)
+        print("\nExample usage:")
+        print("python lbl_resmask.py 'GJ123,GL234' '1.0,2.3' --doplot --pca --Npca 5")
         sys.exit(1)
     
     # Parse the arguments
@@ -633,10 +744,23 @@ if __name__ == "__main__":
     objs = args.objs.split(',')
     nsig_cuts = [float(x) for x in args.nsig_cuts.split(',')]
     doplot = args.doplot
+    pca = args.pca
+    Npca = args.Npca
+    
+    # Check if Npca is provided and is a valid integer
+    if Npca is not None and not isinstance(Npca, int):
+        print("Error: Npca must be an integer.")
+        sys.exit(1)
+
+    if Npca is not None:
+        print(f'Number of PCA components: {Npca}')
+        pca = True
     
     print(f'Constructing residuals for objects: {objs}')
     print(f'Sigma cut values: {nsig_cuts}')
+    print(f'PCA enabled: {pca}')
+
 
     for obj in objs:
         # Construct the residuals for the specified object and frac_noise_increase
-        construct_residuals(obj, nsig_cuts, doplot=doplot)
+        construct_residuals(obj, nsig_cuts, doplot=doplot, pca=pca, Npca=Npca)
