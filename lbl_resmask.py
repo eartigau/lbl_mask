@@ -13,7 +13,139 @@ import argparse
 import sys
 from astropy.table import Table
 from wpca import WPCA#, EMPCA
-from etienne_tools import lin_mini
+
+def linear_minimization(vector, sample, mm, v, sz_sample, case, recon, amps):
+    # raise ValueError(emsg.format(func_name))
+    # ​
+    # vector of N elements
+    # sample: matrix N * M each M column is adjusted in amplitude to minimize
+    # the chi2 according to the input vector
+    # output: vector of length M gives the amplitude of each column
+    #
+    if case == 1:
+        # fill-in the co-variance matrix
+        for i in range(sz_sample[0]):
+            for j in range(i, sz_sample[0]):
+                mm[i, j] = np.sum(sample[i, :] * sample[j, :])
+                # we know the matrix is symetric, we fill the other half
+                # of the diagonal directly
+                mm[j, i] = mm[i, j]
+            # dot-product of vector with sample columns
+            v[i] = np.sum(vector * sample[i, :])
+        # if the matrix cannot we inverted because the determinant is zero,
+        # then we return a NaN for all outputs
+        if np.linalg.det(mm) == 0:
+            amps = np.zeros(sz_sample[0]) + np.nan
+            recon = np.zeros_like(v)
+            return amps, recon
+
+        # invert coveriance matrix
+        inv = np.linalg.inv(mm)
+        # retrieve amplitudes
+        for i in range(len(v)):
+            for j in range(len(v)):
+                amps[i] += inv[i, j] * v[j]
+
+        # reconstruction of the best-fit from the input sample and derived
+        # amplitudes
+        for i in range(sz_sample[0]):
+            recon += amps[i] * sample[i, :]
+        return amps, recon
+
+    if case == 2:
+        # same as for case 1 but with axis flipped
+        for i in range(sz_sample[1]):
+            for j in range(i, sz_sample[1]):
+                mm[i, j] = np.sum(sample[:, i] * sample[:, j])
+                mm[j, i] = mm[i, j]
+            v[i] = np.sum(vector * sample[:, i])
+
+        if np.linalg.det(mm) == 0:
+            return amps, recon
+
+        inv = np.linalg.inv(mm)
+        for i in range(len(v)):
+            for j in range(len(v)):
+                amps[i] += inv[i, j] * v[j]
+
+        for i in range(sz_sample[1]):
+            recon += amps[i] * sample[:, i]
+        return amps, recon
+
+def lin_mini(vector, sample):
+    # wrapper function that sets everything for the @jit later
+    # In particular, we avoid the np.zeros that are not handled
+    # by numba
+
+    # size of input vectors and sample to be adjusted
+    sz_sample = sample.shape  # 1d vector of length N
+    sz_vector = vector.shape  # 2d matrix that is N x M or M x N
+
+    # define which way the sample is flipped relative to the input vector
+    if sz_vector[0] == sz_sample[0]:
+        case = 2
+    elif sz_vector[0] == sz_sample[1]:
+        case = 1
+    else:
+        emsg = ('Neither vector[0]==sample[0] nor vector[0]==sample[1] '
+                '(function = {0})')
+        print(emsg)
+        raise ValueError(emsg.format(emsg))
+
+    # we check if there are NaNs in the vector or the sample
+    # if there are NaNs, we'll fit the rest of the domain
+    isnan = (np.sum(np.isnan(vector)) != 0) or (np.sum(np.isnan(sample)) != 0)
+
+    if case == 1:
+
+        if isnan:
+            # we create a mask of non-NaN
+            keep = np.isfinite(vector) * np.isfinite(np.sum(sample, axis=0))
+            # redefine the input vector to avoid NaNs
+            vector = vector[keep]
+            sample = sample[:, keep]
+
+            sz_sample = sample.shape
+            sz_vector = vector.shape
+
+        # matrix of covariances
+        mm = np.zeros([sz_sample[0], sz_sample[0]])
+        # cross-terms of vector and columns of sample
+        v = np.zeros(sz_sample[0])
+        # reconstructed amplitudes
+        amps = np.zeros(sz_sample[0])
+        # reconstruted fit
+        recon = np.zeros(sz_sample[1])
+
+    if case == 2:
+        # same as for case 1, but with axis flipped
+        if isnan:
+            # we create a mask of non-NaN
+            keep = np.isfinite(vector) * np.isfinite(np.sum(sample, axis=1))
+            vector = vector[keep]
+            sample = sample[keep, :]
+
+            sz_sample = sample.shape
+            sz_vector = vector.shape
+
+        mm = np.zeros([sz_sample[1], sz_sample[1]])
+        v = np.zeros(sz_sample[1])
+        amps = np.zeros(sz_sample[1])
+        recon = np.zeros(sz_sample[0])
+
+    # pass all variables and pre-formatted vectors to the @jit part of the code
+    amp_out, recon_out = linear_minimization(vector, sample, mm, v, sz_sample, case,
+                                             recon, amps)
+
+    # if we had NaNs in the first place, we create a reconstructed vector
+    # that has the same size as the input vector, but pad with NaNs values
+    # for which we cannot derive a value
+    if isnan:
+        recon_out2 = np.zeros_like(keep) + np.nan
+        recon_out2[keep] = recon_out
+        recon_out = recon_out2
+
+    return amp_out, recon_out
 
 def median_sigma_n():
 
@@ -356,7 +488,6 @@ def get_berv(hdr):
 
     return berv
 
-
 def sig(vals):
     """
     Calculate the sigma value (standard deviation) from percentiles.
@@ -571,7 +702,12 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False, pca = False, Npca 
                 # Share y-axis between rows 0 and 1
                 for col in range(2):
                     ax[1, col].get_shared_y_axes().joined(ax[0, col], ax[1, col])
-                p1,p99 = np.nanpercentile(cube_detector, [1, 99])
+                pn1,pp1 = np.nanpercentile(cube_detector, [16, 84])
+                mid = (pp1+pn1)/2
+                diff = (pp1-pn1)/2
+                p1 = mid-2*diff
+                p99 = mid+2*diff
+
                 ax[0,0].imshow(cube_detector, aspect='auto', origin='lower', vmin=p1, vmax=p99)
                 #ax[0,0].set(xlim=[2000, 2500])
                 ax[0,0].set(title='Detector-space data')
@@ -579,6 +715,12 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False, pca = False, Npca 
                 ax[1,0].imshow(cube_model_star, aspect='auto', origin='lower', vmin=p1, vmax=p99)
                 #ax[1,0].set(xlim=[2000, 2500])
                 ax[1,0].set(title='Stellar-restframe model')
+
+                pn1,pp1 = np.nanpercentile(residual, [16, 84])
+                mid = (pp1+pn1)/2
+                diff = (pp1-pn1)/2
+                p1 = mid-2*diff
+                p99 = mid+2*diff
 
                 amp = (p99-p1)
                 #moy = (p99+p1)/2
@@ -654,8 +796,6 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False, pca = False, Npca 
 
     if Npca != pca_cube.shape[1]:
         pca_cube = pca_cube[:Npca]
-    
-
 
     for isig,nsig_cut in enumerate(nsig_cuts):
         # Loop through each file to apply the mask
@@ -759,7 +899,6 @@ if __name__ == "__main__":
     print(f'Constructing residuals for objects: {objs}')
     print(f'Sigma cut values: {nsig_cuts}')
     print(f'PCA enabled: {pca}')
-
 
     for obj in objs:
         # Construct the residuals for the specified object and frac_noise_increase
