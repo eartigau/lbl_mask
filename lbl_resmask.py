@@ -333,15 +333,20 @@ def smart_get(file, extension):
     if not os.path.exists(pkl_outname):
         # Read data from the FITS file
         dict_file = read_t(file)
-        print('saving pickle')
         # Save data to the pickle file
         save_pickle(pkl_outname, dict_file)
     else:
         # Read data from the pickle file
         dict_file = read_pickle(pkl_outname)
     
+    if extension == '':
+        data_extension = None
+    else:
+        # Return the data and header for the specified extension
+        data_extension = dict_file[extension]
+
     # Return the data and header for the specified extension
-    return dict_file[extension], dict_file[extension + '_header']
+    return data_extension, dict_file[extension + '_header']
 
 def lowpassfilter(input_vect, width=101):
     """
@@ -469,9 +474,23 @@ def doppler_spline(wave_sp, sp, dv):
 
     return sp2
 
-def get_berv(hdr):
-    if 'BERV' in hdr:
-        berv = hdr['BERV']
+def get_berv(hdr, berv_keyword = 'BERV'):
+    """
+    Retrieve the BERV value from the FITS header.
+
+    This function retrieves the BERV (Barycentric Earth Radial Velocity) value from the FITS header.
+    If the BERV value is not found in the header, the function raises an error.
+
+    Parameters:
+    hdr (Header): The FITS header object.
+    berv_keyword (str): The keyword to search for in the FITS header. Default is 'BERV'.
+
+    Returns:
+    float: The BERV value expressed in km/s.
+    """
+
+    if berv_keyword in hdr:
+        berv = hdr[berv_keyword]
 
         if 'MKT_ARV' in hdr:
             # if we have the latest version of APERO, we can use the MKT_ARV keyword
@@ -484,7 +503,9 @@ def get_berv(hdr):
         # raise an error if no BERV value is found
         # and we cannot correct for the star's velocity. We will need to update the codes
         # to handle this case.
-        raise ValueError('No BERV value found in file')
+        msg = f'No BERV value found in file, berv keyword {berv_keyword} not found in header'
+        print(msg)
+        raise ValueError(msg)
 
     return berv
 
@@ -529,25 +550,58 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False, pca = False, Npca 
 
 
     # Get list of FITS files in the directory
-    files = np.array(glob.glob(f'{obj}/*t.fits'))
+    files = np.array(glob.glob(f'{obj}/*.fits'))
     if len(files) == 0:
         print(f'No FITS files found in directory: {obj}')
         return
     
     files = files[np.argsort(files)]
 
-    hdr0 = smart_get(files[0], 'FluxA')[1]
-    if 'NIRPS' in hdr0['INSTRUME'].upper():
-        fiber_setup = 'A'
-        instrument = 'NIRPS_HE'
-    elif 'SPIROU' in hdr0['INSTRUME'].upper():
-        fiber_setup = 'AB'
+    # we check if the data is from DRS (Geneva team) or from the APERO pipeline (SPIROU, NIRPS) and we
+    # will have the possibility to add some more at a later time
+
+    instrument_drs = 'None'
+
+    dd = read_t(files[0])
+    if 'FluxAB' in dd:
+        instrument_drs = 'APERO-SPIROU'
         instrument = 'SPIROU'
-    else:
-        raise ValueError('Unknown instrument in header')
+        flux_data = 'FluxAB'
+        wave_data = 'WaveAB'
+        restframe = 'observer'
+        berv_keyword = 'BERV'
+        berv_extension = 'FluxAB'
+
+    if 'FluxA' in dd and 'FluxAB' not in dd:
+        instrument_drs = 'APERO-NIRPS'
+        instrument = 'NIRPS'
+        flux_data = 'FluxA'
+        wave_data = 'WaveA'
+        restframe = 'observer'
+        berv_keyword = 'BERV'
+        berv_extension = 'FluxA'
+
+    if 'SCIDATA' in dd:
+        instrument_drs = 'DRS-NIRPS'
+        instrument = 'NIRPS'
+        flux_data = 'SCIDATA'
+        wave_data = 'WAVEDATA_VAC_BARY'
+        restframe = 'barycentric'
+        berv_keyword = 'HIERARCH ESO QC BERV'
+        berv_extension = ''
+
+
+    print('Instrument:', instrument_drs)
+    print('Restframe:', restframe)
+    print('BERV keyword:', berv_keyword)
+    print('BERV extension:', berv_extension)
+    print('Files[0] : ', files[0])
+
+    if instrument_drs == 'None':
+        raise ValueError('Unknown instrument in header, please update')
 
     # Number of orders in the data
-    n_orders = smart_get(files[0], f'Flux{fiber_setup}')[0].shape[0]
+    n_orders, npix_wave = smart_get(files[0],flux_data)[0].shape
 
     outpaths = []
     for nsig_cut in nsig_cuts:
@@ -565,8 +619,6 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False, pca = False, Npca 
     # Width parameter for lowpass filter
     wpwidth = 51
 
-
-
     if not doplot:
         orders = np.arange(n_orders)
     else:
@@ -575,32 +627,28 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False, pca = False, Npca 
 
     nsigma_map_outname = 'nsig_residuals_'+obj+'.fits'
 
-    if not os.path.exists(nsigma_map_outname):
+    if not os.path.exists(nsigma_map_outname) or doplot:
         # Initialize array to store BERV values
         bervs = np.zeros(len(files))
         for i in tqdm(range(len(files)), desc='Reading BERV values', leave=False):
             # Read BERV value from each file
+            dd = read_t(files[i])
+            hdr = dd[berv_extension+'_header']
+            bervs[i] = get_berv(hdr,berv_keyword)
 
+        nsig_map = np.zeros((n_orders, npix_wave))
 
-            hdr = smart_get(files[i], f'Flux{fiber_setup}')[1]
-            bervs[i] = get_berv(hdr)
-
-
-
-
-
-        nsig_map = np.zeros((n_orders, 4088))
-        pca_cube = np.zeros((Npca,n_orders, 4088))
-        median_template = np.zeros((n_orders, 4088))
-        wave_template = smart_get(files[0], f'Wave{fiber_setup}')[0]
+        pca_cube = np.zeros((Npca,n_orders, npix_wave))
+        median_template = np.zeros((n_orders, npix_wave))
+        wave_template = smart_get(files[0], wave_data)[0]
 
 
         for iord in tqdm(orders, desc='Processing orders', leave=False):
             # Initialize arrays to store data
-            cube_detector = np.zeros((len(files), 4088))+np.nan
-            cube_stellar = np.zeros((len(files), 4088))+np.nan
-            cube_model_star = np.zeros((len(files), 4088))+np.nan
-            wave = np.zeros((len(files), 4088))
+            cube_detector = np.zeros((len(files), npix_wave))+np.nan
+            cube_stellar = np.zeros((len(files), npix_wave))+np.nan
+            cube_model_star = np.zeros((len(files), npix_wave))+np.nan
+            wave = np.zeros((len(files), npix_wave))
 
             # Initialize array to track skipped files
             skipped = np.zeros(len(files))
@@ -609,10 +657,14 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False, pca = False, Npca 
 
                 dd = read_t(files[i])
                 # Read wavelength data
-                wave[i] = dd[f'Wave{fiber_setup}'][iord]
+                wave_tmp = dd[wave_data][iord]
+                if restframe == 'barycentric':
+                    wave_tmp = doppler_shift(wave_tmp, bervs[i])
+                wave[i] = wave_tmp
+
 
                 # Read flux data
-                tmp = dd[f'Flux{fiber_setup}'][iord]
+                tmp = dd[flux_data][iord]
 
                 mean_bad = np.nanmean(~np.isfinite(tmp))
                 if mean_bad > 0.9:
@@ -625,6 +677,13 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False, pca = False, Npca 
                 
                 cube_detector[i] = tmp
                 cube_stellar[i] = doppler_spline(wave[i], tmp, -bervs[i])
+
+            # rough esimate of median spectrum
+            med = np.nanmedian(cube_stellar, axis=0)
+            # fine-tune scaling
+            for iframe in range(len(files)):
+                ratio = np.nanmedian(cube_stellar[iframe]/med)
+                cube_stellar[iframe] /= ratio
 
             # Skip the order if more than 50% of the files were skipped
             if np.mean(skipped) > 0.5:
@@ -678,8 +737,9 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False, pca = False, Npca 
             nsig = med_res*np.sqrt(nvalid)/1.25
             # this is a factor to correct for the fact that the residuals are not normally distributed
 
+
             mask_fit_pca = np.zeros( residual.shape[1], dtype = bool)
-            mask_fit_pca[np.abs(nsig)>3] = True
+            mask_fit_pca[np.abs(nsig)>3] = True # this could be lowered to compute PCA on more pixels
             # dilate with a 3 pixel kernel
             mask_fit_pca = binary_dilation(mask_fit_pca, structure=np.ones(3), output=mask_fit_pca)
 
@@ -690,7 +750,7 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False, pca = False, Npca 
             pca = WPCA(Npca)
             pca.fit(residual2, weights2)
 
-            pca_components = np.zeros((Npca, 4088))
+            pca_components = np.zeros((Npca, npix_wave))
             pca_components[:,mask_fit_pca] = pca.components_
 
             pca_cube[:,iord,:] = pca_components
@@ -811,15 +871,15 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False, pca = False, Npca 
             # Read the data from the FITS file
             dict_file = read_t(file)
             # Apply the mask to the flux data
-            sp = dict_file[f'Flux{fiber_setup}']
+            sp = dict_file[flux_data]
 
             if not pca:
                 mask = np.abs(nsigmap) > nsig_cut
                 sp[mask] = np.nan
             
             else:
-                wave = dict_file[f'Wave{fiber_setup}']
-                berv = get_berv(dict_file[f'Flux{fiber_setup}_header'])
+                wave = dict_file[wave_data]
+                berv = get_berv(dict_file[f'{flux_data}_header'])
                 for iord in range(n_orders):
                     pca_ord = pca_cube[:,iord,:]
 
@@ -842,17 +902,17 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False, pca = False, Npca 
                     p_invalid = 1-p_valid
 
                     sp[iord] -= (recon*p_invalid)
-                dict_file[f'Flux{fiber_setup}'] = sp
+                dict_file[flux_data] = sp
 
             #dict_file[f'Flux{fiber_setup}'][mask] = np.nan
 
-            hdr = dict_file[f'Flux{fiber_setup}_header']
+            hdr = dict_file[f'{flux_data}_header']
             if 'WAVEFILE' in hdr:
                 wave_sol_path = f'/space/spirou/SLINKY/data_{instrument}_updatedwavesol/'+hdr['WAVEFILE']
                 if os.path.exists(wave_sol_path):
                     print('We have an updated wave solution and will apply it')
                     wave_sol = fits.getdata(wave_sol_path)
-                    dict_file[f'Wave{fiber_setup}'] = wave_sol
+                    dict_file[wave_data] = wave_sol
 
             # Write the masked data to the output file
             print(f'sigma [{isig+1} / {len(nsig_cuts)}] file [{ifile+1} / {len(files)}]\tWriting file {outname}')
@@ -902,4 +962,7 @@ if __name__ == "__main__":
 
     for obj in objs:
         # Construct the residuals for the specified object and frac_noise_increase
-        construct_residuals(obj, nsig_cuts, doplot=doplot, pca=pca, Npca=Npca)
+        if Npca is not None:
+            construct_residuals(obj, nsig_cuts, doplot=doplot, pca=pca, Npca=Npca)
+        else:
+            construct_residuals(obj, nsig_cuts, doplot=doplot, pca=pca)
