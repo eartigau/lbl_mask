@@ -458,6 +458,9 @@ def doppler_spline(wave_sp, sp, dv):
     
     # Create a mask for finite values in the spectrum
     g = np.isfinite(sp)
+
+    if np.sum(g)<5:
+        return np.zeros_like(sp) + np.nan
     
     # Convert the mask to float for interpolation
     g_float = np.isfinite(sp).astype(float)
@@ -662,6 +665,10 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False, pca = False, Npca 
                     wave_tmp = doppler_shift(wave_tmp, bervs[i])
                 wave[i] = wave_tmp
 
+                # bad data
+                if instrument_drs == 'DRS-NIRPS':
+                    bad = dd[flux_data] == 0
+                    dd[flux_data][bad] = np.nan
 
                 # Read flux data
                 tmp = dd[flux_data][iord]
@@ -739,15 +746,22 @@ def construct_residuals(obj, nsig_cuts = [3], doplot = False, pca = False, Npca 
 
 
             mask_fit_pca = np.zeros( residual.shape[1], dtype = bool)
-            mask_fit_pca[np.abs(nsig)>3] = True # this could be lowered to compute PCA on more pixels
+            
+            mask_fit_pca[np.abs(nsig)>0] = True # this could be lowered to compute PCA on more pixels
             # dilate with a 3 pixel kernel
-            mask_fit_pca = binary_dilation(mask_fit_pca, structure=np.ones(3), output=mask_fit_pca)
+            #mask_fit_pca = binary_dilation(mask_fit_pca, structure=np.ones(3), output=mask_fit_pca)
 
             weights2 = weights[:,mask_fit_pca].copy()
             residual2 = residual[:,mask_fit_pca].copy()
             residual2[~np.isfinite(residual2)] = 0
 
             pca = WPCA(Npca)
+
+            #print(np.mean(mask_fit_pca), np.sum(mask_fit_pca))
+            #print(Npca)
+            #print(residual2.shape)
+            #print(weights2.shape)
+
             pca.fit(residual2, weights2)
 
             pca_components = np.zeros((Npca, npix_wave))
