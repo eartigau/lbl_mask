@@ -2,7 +2,7 @@
 
 ## Installation
 
-There's no proper installation script yet (we're working on that). You simply download the Python script and put it in the science folder of your LBL installation. If you are 100% lazy, you can just run the following command on a linux station:
+There's no proper installation script yet (we're working on that). You simply download the Python script and put it in the science folder of your LBL installation. If you are 100% lazy, you can just run the following command on a Linux station:
 
 ```wget -O lbl_resmask.py https://github.com/eartigau/lbl_mask/raw/refs/heads/main/lbl_resmask.py```
 
@@ -21,6 +21,11 @@ You can also show debug plots if you want :
 ``` python lbl_resmask.py PROXIMA 6.0 --doplot```
 
 The code will save a fits file of 0s and 1s with the name of the object and thresholding. For the above command, you would get  ```mask_PROXIMA_6.0sig.fits```. All masked files will be in the folder ```PROXIMAmask6.0sig/```
+
+## Instead of masking, subtract a PCA model
+
+``` python lbl_resmask.py PROXIMA 6.0 --pca```
+
 
 ## Compatibility with the main LBL code
 
